@@ -1,0 +1,4 @@
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pymongo[srv]>=4.6
+kaggle>=1.6
