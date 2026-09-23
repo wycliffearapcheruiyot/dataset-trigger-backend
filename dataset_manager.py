@@ -20,10 +20,23 @@ Environment variables
   KAGGLE_DATASET                 "owner/slug" of the dataset that must exist
   HF_REPO_ID                     Hugging Face repo to copy into it, e.g. "org/model"
   HF_REVISION                    optional branch/tag/commit
+  HF_TOKEN                       optional, only if the HF repo is private/gated
   DATASET_TITLE                  optional title for the Kaggle dataset
   DATASET_EXPECTED_FILE          optional file name that must be in the dataset
   DATASET_KERNEL_SLUG            optional, default "hf-to-kaggle-dataset"
+  DATASET_SECRETS_SLUG           optional, default "dataset-trigger-secrets"
   DATASET_PREPARE_TIMEOUT_MINUTES optional, default 90
+
+Credentials for the Kaggle-side script
+  Kaggle kernels don't inherit Render's environment, and Kaggle's UI-managed
+  "Secrets" (Add-ons -> Secrets) are stripped every time a kernel is pushed
+  via the CLI/API -- which is every run here. So instead, before each push
+  this module writes the Kaggle key and (optional) HF token into a small
+  private Kaggle *dataset* (see `_ensure_secrets_dataset`) and attaches that
+  dataset to the kernel via `dataset_sources`. Dataset attachments are part
+  of the kernel's own metadata, so -- unlike Secrets -- they survive CLI
+  pushes. `fetch_dataset.py` reads the credentials from that attached
+  dataset at run time. No manual Kaggle UI step is required.
 """
 
 import json
@@ -82,13 +95,17 @@ def _config():
         kaggle_env["KAGGLE_API_TOKEN"] = token
     if key:
         kaggle_env["KAGGLE_KEY"] = key
+    secrets_slug = os.environ.get("DATASET_SECRETS_SLUG", "dataset-trigger-secrets").strip()
     return {
         "dataset": dataset,
         "hf_repo": hf_repo,
         "hf_revision": os.environ.get("HF_REVISION", "").strip(),
+        "hf_token": os.environ.get("HF_TOKEN", "").strip(),
         "title": os.environ.get("DATASET_TITLE", "").strip() or dataset.split("/", 1)[1],
         "expected_file": os.environ.get("DATASET_EXPECTED_FILE", "").strip(),
         "kernel_slug": os.environ.get("DATASET_KERNEL_SLUG", "hf-to-kaggle-dataset").strip(),
+        "secrets_slug": secrets_slug,
+        "secrets_dataset": f"{user}/{secrets_slug}",
         "env": kaggle_env,
         "username": user,
     }
@@ -122,14 +139,67 @@ def _kernel_status(cfg) -> str:
     """Lower-cased Kaggle run status: queued / running / complete / error / ..."""
     res = _kaggle(["kernels", "status", f"{cfg['username']}/{cfg['kernel_slug']}"], cfg["env"])
     if res.returncode != 0:
+        print(f"[dataset_manager] kernel status check failed (rc={res.returncode}): "
+              f"stdout={res.stdout.strip()!r} stderr={res.stderr.strip()!r}", flush=True)
         return "unknown"
     m = re.search(r'status\s+"?(?:KernelWorkerStatus\.)?([A-Za-z_]+)"?', res.stdout)
     return re.sub(r"[^a-z]", "", m.group(1).lower()) if m else "unknown"
 
 
+def _ensure_secrets_dataset(cfg) -> None:
+    """
+    Create/refresh a private Kaggle dataset holding the credentials the
+    Kaggle-side script needs at runtime (Kaggle key/token, optional HF token).
+
+    Kaggle's UI-only "Secrets" are stripped on every CLI push, so a plain
+    Secret can't survive this app's automated `kaggle kernels push` calls.
+    A *dataset* attached via `dataset_sources` in kernel-metadata.json does
+    survive, because that attachment is part of the metadata file itself.
+    This keeps the whole pipeline hands-off after the initial env vars are
+    set -- no manual Kaggle UI step needed.
+    """
+    secrets = {}
+    if cfg["env"].get("KAGGLE_API_TOKEN"):
+        secrets["KAGGLE_API_TOKEN"] = cfg["env"]["KAGGLE_API_TOKEN"]
+    if cfg["env"].get("KAGGLE_KEY"):
+        secrets["KAGGLE_KEY"] = cfg["env"]["KAGGLE_KEY"]
+    if cfg["hf_token"]:
+        secrets["HF_TOKEN"] = cfg["hf_token"]
+    if not secrets:
+        raise DatasetError("No Kaggle credentials available to write into the secrets dataset.")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        (Path(tmp) / "secrets.json").write_text(json.dumps(secrets))
+        (Path(tmp) / "dataset-metadata.json").write_text(json.dumps({
+            "title": cfg["secrets_slug"],
+            "id": cfg["secrets_dataset"],
+            "licenses": [{"name": "other"}],
+            "subtitle": "Private credentials for the dataset-trigger-backend kernel.",
+            "description": (
+                "PRIVATE. Holds the Kaggle key/token (and optional HF token) that "
+                f"{cfg['username']}/{cfg['kernel_slug']} needs at runtime. Attached via "
+                "dataset_sources in that kernel's metadata. Do not make public."
+            ),
+        }))
+        # `kaggle datasets create` defaults to private; no extra flag needed.
+        res = _kaggle(["datasets", "create", "-p", tmp, "--dir-mode", "zip"], cfg["env"], timeout=120)
+        out = (res.stdout + "\n" + res.stderr).lower()
+        if res.returncode != 0 or "error" in out:
+            res = _kaggle(
+                ["datasets", "version", "-p", tmp, "-m", "refresh credentials", "--dir-mode", "zip"],
+                cfg["env"], timeout=120,
+            )
+            if res.returncode != 0:
+                raise DatasetError(
+                    f"Could not create/update the secrets dataset: {res.stderr.strip() or res.stdout.strip()}"
+                )
+
+
 def _push_kernel(cfg) -> None:
+    _ensure_secrets_dataset(cfg)
+
     script = KERNEL_TEMPLATE.read_text()
-    public_cfg = {k: cfg[k] for k in ("dataset", "hf_repo", "hf_revision", "title")}
+    public_cfg = {k: cfg[k] for k in ("dataset", "hf_repo", "hf_revision", "title", "secrets_dataset")}
     script = script.replace("__CONFIG__", repr(public_cfg))
     metadata = {
         "id": f"{cfg['username']}/{cfg['kernel_slug']}",
@@ -140,7 +210,7 @@ def _push_kernel(cfg) -> None:
         "is_private": "true",
         "enable_gpu": "false",
         "enable_internet": "true",
-        "dataset_sources": [],
+        "dataset_sources": [cfg["secrets_dataset"]],
         "competition_sources": [],
         "kernel_sources": [],
     }

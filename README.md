@@ -19,12 +19,15 @@ so concurrent triggers start only one Kaggle run and state survives restarts.
 ## Setup
 1. **MongoDB Atlas**: create a database user; under Network Access allow Render
    (0.0.0.0/0 is the simple option). Put the connection string in `MONGODB_URI`.
-2. **Kaggle notebook secrets**: after the first `ensure`, open the pushed private
-   script `<KAGGLE_USERNAME>/hf-to-kaggle-dataset` on Kaggle -> Add-ons -> Secrets,
-   attach `KAGGLE_KEY` (and `HF_TOKEN` if the Hugging Face repo is private/gated),
-   then call `ensure` again to retry.
-3. **Render**: push this folder to GitHub, create a Web Service from it (or use
+2. **Render**: push this folder to GitHub, create a Web Service from it (or use
    `render.yaml` as a Blueprint), and fill in the env vars from `.env.example`.
+   That's it -- no manual Kaggle UI step is needed. Before every push, the
+   service writes your Kaggle key (and `HF_TOKEN`, if set) into a small
+   private Kaggle dataset (`DATASET_SECRETS_SLUG`, default
+   `dataset-trigger-secrets`) and attaches it to the pushed kernel via
+   `dataset_sources`. That survives automated CLI pushes, unlike Kaggle's
+   UI-managed "Secrets," which are stripped on every push -- so the kernel
+   always has fresh credentials without you touching the Kaggle dashboard.
 
 ## Test
     curl -X POST "https://YOUR-SERVICE.onrender.com/dataset/ensure?wait=60" \

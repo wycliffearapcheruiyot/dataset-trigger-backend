@@ -4,9 +4,13 @@ fetch_dataset.py  --  runs ON KAGGLE (not on Render).
 Downloads a repo from Hugging Face and publishes it as a Kaggle dataset.
 dataset_manager.py fills in CONFIG below before pushing this script to Kaggle.
 
-One-time setup: open this notebook in Kaggle -> Add-ons -> Secrets, and attach
-  KAGGLE_API_TOKEN  (or KAGGLE_KEY)  your Kaggle token / API key
-  HF_TOKEN    (optional)  only if the Hugging Face repo is private/gated
+Credentials: dataset_manager.py writes the Kaggle key/token (and optional
+HF token) into a small private Kaggle dataset and attaches it to this kernel
+via dataset_sources -- that happens automatically on every push, so there is
+no manual setup step here. `get_secret` also checks Kaggle's UI-managed
+"Secrets" (Add-ons -> Secrets) first, in case you've attached one by hand;
+those just don't survive an automated CLI push the way the attached dataset
+does.
 """
 
 import json
@@ -19,12 +23,28 @@ import tempfile
 CONFIG = __CONFIG__  # injected by dataset_manager.py
 
 
+def _dataset_secret(name):
+    """Read a credential from the private secrets dataset attached to this kernel."""
+    slug = CONFIG.get("secrets_dataset", "").split("/")[-1]
+    if not slug:
+        return None
+    path = os.path.join("/kaggle/input", slug, "secrets.json")
+    try:
+        with open(path) as f:
+            return json.load(f).get(name)
+    except Exception:
+        return None
+
+
 def get_secret(name):
     try:
         from kaggle_secrets import UserSecretsClient
-        return UserSecretsClient().get_secret(name)
+        val = UserSecretsClient().get_secret(name)
+        if val:
+            return val
     except Exception:
-        return os.environ.get(name)
+        pass
+    return os.environ.get(name) or _dataset_secret(name)
 
 
 def run(cmd, env=None):

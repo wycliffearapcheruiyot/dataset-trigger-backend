@@ -23,3 +23,5 @@ services:
         sync: false
       - key: HF_REPO_ID
         sync: false
+      - key: HF_TOKEN
+        sync: false
