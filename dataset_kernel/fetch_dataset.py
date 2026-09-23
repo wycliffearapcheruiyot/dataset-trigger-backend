@@ -5,7 +5,7 @@ Downloads a repo from Hugging Face and publishes it as a Kaggle dataset.
 dataset_manager.py fills in CONFIG below before pushing this script to Kaggle.
 
 One-time setup: open this notebook in Kaggle -> Add-ons -> Secrets, and attach
-  KAGGLE_KEY  (required)  your Kaggle API key
+  KAGGLE_API_TOKEN  (or KAGGLE_KEY)  your Kaggle token / API key
   HF_TOKEN    (optional)  only if the Hugging Face repo is private/gated
 """
 
@@ -43,10 +43,15 @@ def failed(res):
 def main():
     owner, slug = CONFIG["dataset"].split("/", 1)
 
+    token = get_secret("KAGGLE_API_TOKEN")
     key = get_secret("KAGGLE_KEY")
-    if not key:
-        sys.exit("KAGGLE_KEY secret is not attached to this notebook (Add-ons -> Secrets).")
-    env = {**os.environ, "KAGGLE_USERNAME": owner, "KAGGLE_KEY": key}
+    if not (token or key):
+        sys.exit("Attach a KAGGLE_API_TOKEN (or KAGGLE_KEY) secret to this notebook (Add-ons -> Secrets).")
+    env = {**os.environ, "KAGGLE_USERNAME": owner}
+    if token:
+        env["KAGGLE_API_TOKEN"] = token
+    if key:
+        env["KAGGLE_KEY"] = key
     hf_token = get_secret("HF_TOKEN") or None
 
     subprocess.run([sys.executable, "-m", "pip", "install", "-q", "huggingface_hub"], check=True)

@@ -15,7 +15,8 @@ State lives in one Mongo document ({"_id": "dataset"}) in `dataset_state`, so
 two triggers arriving together only start ONE Kaggle run.
 
 Environment variables
-  KAGGLE_USERNAME / KAGGLE_KEY   already used by session_manager.py
+  KAGGLE_USERNAME                your Kaggle username
+  KAGGLE_API_TOKEN               new-style Kaggle token (or use KAGGLE_KEY, the legacy API key)
   KAGGLE_DATASET                 "owner/slug" of the dataset that must exist
   HF_REPO_ID                     Hugging Face repo to copy into it, e.g. "org/model"
   HF_REVISION                    optional branch/tag/commit
@@ -69,9 +70,18 @@ def _config():
         raise DatasetError("KAGGLE_DATASET must be set to 'owner/slug'.")
     if not hf_repo:
         raise DatasetError("HF_REPO_ID is not set.")
-    user, key = os.environ.get("KAGGLE_USERNAME"), os.environ.get("KAGGLE_KEY")
-    if not (user and key):
-        raise DatasetError("KAGGLE_USERNAME / KAGGLE_KEY are not set in the environment.")
+    user = os.environ.get("KAGGLE_USERNAME", "").strip()
+    key = os.environ.get("KAGGLE_KEY", "").strip()
+    token = os.environ.get("KAGGLE_API_TOKEN", "").strip()
+    if not user:
+        raise DatasetError("KAGGLE_USERNAME is not set in the environment.")
+    if not (token or key):
+        raise DatasetError("Set KAGGLE_API_TOKEN (new Kaggle token) or KAGGLE_KEY (legacy API key).")
+    kaggle_env = {**os.environ, "KAGGLE_USERNAME": user}
+    if token:
+        kaggle_env["KAGGLE_API_TOKEN"] = token
+    if key:
+        kaggle_env["KAGGLE_KEY"] = key
     return {
         "dataset": dataset,
         "hf_repo": hf_repo,
@@ -79,7 +89,7 @@ def _config():
         "title": os.environ.get("DATASET_TITLE", "").strip() or dataset.split("/", 1)[1],
         "expected_file": os.environ.get("DATASET_EXPECTED_FILE", "").strip(),
         "kernel_slug": os.environ.get("DATASET_KERNEL_SLUG", "hf-to-kaggle-dataset").strip(),
-        "env": {**os.environ, "KAGGLE_USERNAME": user, "KAGGLE_KEY": key},
+        "env": kaggle_env,
         "username": user,
     }
 
